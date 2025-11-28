@@ -1,0 +1,225 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+//
+// ===================== USER =====================
+//
+model User {
+  id           Int     @id @default(autoincrement())
+  email        String  @unique
+  username     String
+  password     String
+  role         String
+  isActive     Boolean @default(false)
+  nisnNta      String?
+  alamat       String?
+  focusEventId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  peserta    Peserta[]
+  scoreGiven Score[]   @relation("JuriScores")
+  juaras     Juara[]   @relation("JuaraSetByUser")
+  focusEvent Event?    @relation("OperatorFocusEvent", fields: [focusEventId], references: [id])
+}
+
+//
+// ===================== BERITA =====================
+//
+model Berita {
+  id        Int      @id @default(autoincrement())
+  title     String
+  photoPath String?
+  deskripsi String
+  tanggal   DateTime
+  eventId   Int?
+  tags      String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  event Event? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+}
+
+//
+// ===================== EVENT =====================
+//
+model Event {
+  id             Int      @id @default(autoincrement())
+  namaEvent      String
+  photoPath      String?
+  deskripsiEvent String?
+  tanggalEvent   DateTime
+  tempatEvent    String
+  venue          String?
+  status         String?
+  kuota          Int?
+  biaya          Int?
+  kategori       String?
+  isFeatured     Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  peserta      Peserta[]
+  juara        Juara[]
+  partisipasi  Partisipasi[]
+  scores       Score[]
+  berita       Berita[]
+  focusedUsers User[]        @relation("OperatorFocusEvent")
+}
+
+//
+// ===================== PESERTA =====================
+//
+model Peserta {
+  id                 Int      @id @default(autoincrement())
+  userId             Int
+  eventId            Int
+  noPeserta          String?
+  namaTim            String
+  namaPerwakilan     String?
+  status             String   @default("pending")
+  tanggalPendaftaran DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  user  User  @relation(fields: [userId], references: [id])
+  event Event @relation(fields: [eventId], references: [id])
+
+  detailPeserta DetailPeserta[]
+  scores        Score[]
+  juara         Juara[]
+  partisipasi   Partisipasi?
+
+  @@unique([userId, eventId]) // 1 user tidak bisa daftar event yang sama dua kali
+  @@index([userId])
+}
+
+//
+// ===================== DETAIL PESERTA =====================
+//
+model DetailPeserta {
+  id           Int       @id @default(autoincrement())
+  pesertaId    Int
+  namaDetail   String
+  tanggalLahir DateTime?
+  umur         Int?
+  nisnNta      String?
+  alamat       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  peserta Peserta @relation(fields: [pesertaId], references: [id], onDelete: Cascade)
+}
+
+//
+// ===================== JUARA =====================
+//
+model Juara {
+  id         Int     @id @default(autoincrement())
+  eventId    Int
+  pesertaId  Int
+  juara      String
+  kategori   String?
+  berkasLink String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  setByUserId Int?
+
+  event        Event         @relation(fields: [eventId], references: [id])
+  peserta      Peserta       @relation(fields: [pesertaId], references: [id])
+  partisipasis Partisipasi[]
+
+  setByUser User? @relation("JuaraSetByUser", fields: [setByUserId], references: [id])
+}
+
+//
+// ===================== PARTISIPASI =====================
+//
+model Partisipasi {
+  id        Int     @id @default(autoincrement())
+  pesertaId Int     @unique
+  eventId   Int
+  juaraId   Int?
+  linkDrive String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  peserta Peserta @relation(fields: [pesertaId], references: [id])
+  event   Event   @relation(fields: [eventId], references: [id])
+  juara   Juara?  @relation(fields: [juaraId], references: [id])
+}
+
+//
+// ===================== SCORE =====================
+//
+model Score {
+  id        Int     @id @default(autoincrement())
+  eventId   Int
+  pesertaId Int
+  juriId    Int
+  nilai     Int?
+  catatan   String?
+  evidence  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  event   Event   @relation(fields: [eventId], references: [id])
+  peserta Peserta @relation(fields: [pesertaId], references: [id])
+  juri    User    @relation("JuriScores", fields: [juriId], references: [id])
+
+  details ScoreDetail[]
+
+  @@unique([eventId, pesertaId, juriId])
+}
+
+//
+// ===================== SCORE DETAIL =====================
+//
+model ScoreDetail {
+  id       Int     @id @default(autoincrement())
+  scoreId  Int
+  kriteria String
+  nilai    Int
+  bobot    Float?
+  catatan  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  score Score @relation(fields: [scoreId], references: [id], onDelete: Cascade)
+
+  @@index([scoreId])
+}
