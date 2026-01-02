@@ -419,6 +419,23 @@ function buildStatusHandler(targetStatus) {
       data: { status: targetStatus },
     });
 
+    // Auto-create partisipasi record when peserta is approved
+    if (targetStatus === "approved") {
+      const existingPartisipasi = await prisma.partisipasi.findFirst({
+        where: { pesertaId: id, eventId: peserta.eventId },
+      });
+
+      if (!existingPartisipasi) {
+        await prisma.partisipasi.create({
+          data: {
+            pesertaId: id,
+            eventId: peserta.eventId,
+            linkDrive: "",
+          },
+        });
+      }
+    }
+
     res.json({
       message:
         targetStatus === "approved"
