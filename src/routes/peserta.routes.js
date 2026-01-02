@@ -453,6 +453,27 @@ router.delete(
 
     await ensureOperatorCanAccessPeserta(req, peserta);
 
+    // Delete related Juara records first (due to RESTRICT constraint)
+    await prisma.juara.deleteMany({
+      where: { pesertaId: id },
+    });
+
+    // Delete related Partisipasi records
+    await prisma.partisipasi.deleteMany({
+      where: { pesertaId: id },
+    });
+
+    // Delete related DetailPeserta records
+    await prisma.detailPeserta.deleteMany({
+      where: { pesertaId: id },
+    });
+
+    // Delete related Score records
+    await prisma.score.deleteMany({
+      where: { pesertaId: id },
+    });
+
+    // Finally delete the Peserta
     await prisma.peserta.delete({
       where: { id },
     });
