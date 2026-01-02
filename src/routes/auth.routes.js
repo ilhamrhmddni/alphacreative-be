@@ -69,6 +69,7 @@ router.get("/me", auth, async (req, res, next) => {
         isActive: true,
         nisnNta: true,
         alamat: true,
+        profilePhotoPath: true,
         focusEventId: true,
         focusEvent: {
           select: {
@@ -92,7 +93,7 @@ router.get("/me", auth, async (req, res, next) => {
 // PUT /api/auth/me → update profil sendiri
 router.put("/me", auth, async (req, res, next) => {
   try {
-    const { username, nisnNta, alamat, focusEventId } = req.body;
+    const { username, nisnNta, alamat, focusEventId, profilePhotoPath } = req.body;
 
     if (!username || typeof username !== "string" || !username.trim()) {
       throw httpError(400, "Nama pengguna wajib diisi");
@@ -111,6 +112,13 @@ router.put("/me", auth, async (req, res, next) => {
       alamat:
         typeof alamat === "string" && alamat.trim() ? alamat.trim() : null,
     };
+
+    if (profilePhotoPath !== undefined) {
+      updatePayload.profilePhotoPath =
+        typeof profilePhotoPath === "string" && profilePhotoPath.trim()
+          ? profilePhotoPath.trim()
+          : null;
+    }
 
     if (focusEventId !== undefined) {
       if (focusEventId === null || focusEventId === "") {
@@ -142,6 +150,7 @@ router.put("/me", auth, async (req, res, next) => {
         isActive: true,
         nisnNta: true,
         alamat: true,
+        profilePhotoPath: true,
         focusEventId: true,
         focusEvent: {
           select: {
@@ -225,6 +234,7 @@ router.post("/register", async (req, res, next) => {
         isActive: true,
         nisnNta: true,
         alamat: true,
+        profilePhotoPath: true,
       },
     });
 

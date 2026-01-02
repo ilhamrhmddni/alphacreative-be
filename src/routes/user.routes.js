@@ -43,6 +43,7 @@ router.get("/", async (req, res, next) => {
         isActive: true,
         nisnNta: true,
         alamat: true,
+        profilePhotoPath: true,
         focusEventId: true,
         focusEvent: {
           select: {
@@ -74,6 +75,7 @@ router.get("/:id", async (req, res, next) => {
         isActive: true,
         nisnNta: true,
         alamat: true,
+        profilePhotoPath: true,
         focusEventId: true,
         focusEvent: {
           select: {
@@ -112,6 +114,7 @@ router.patch("/:id/activate", async (req, res, next) => {
         isActive: true,
         nisnNta: true,
         alamat: true,
+        profilePhotoPath: true,
         focusEventId: true,
         focusEvent: {
           select: { id: true, namaEvent: true },
@@ -146,6 +149,7 @@ router.patch("/:id/deactivate", async (req, res, next) => {
         isActive: true,
         nisnNta: true,
         alamat: true,
+        profilePhotoPath: true,
         focusEventId: true,
         focusEvent: {
           select: { id: true, namaEvent: true },
@@ -231,6 +235,10 @@ router.post("/", async (req, res, next) => {
         nisnNta: nisnNta ?? null,
         alamat: alamat ?? null,
         focusEventId: normalizedFocusEventId,
+        profilePhotoPath:
+          typeof req.body.profilePhotoPath === "string" && req.body.profilePhotoPath.trim()
+            ? req.body.profilePhotoPath.trim()
+            : null,
       },
     });
 
@@ -246,7 +254,7 @@ router.post("/", async (req, res, next) => {
 router.put("/:id", async (req, res, next) => {
   try {
     const id = parseId(req.params.id);
-    const { email, username, role, isActive, nisnNta, alamat, focusEventId } = req.body;
+    const { email, username, role, isActive, nisnNta, alamat, focusEventId, profilePhotoPath } = req.body;
 
     if (
       email === undefined &&
@@ -271,6 +279,13 @@ router.put("/:id", async (req, res, next) => {
       nisnNta,
       alamat,
     };
+
+    if (profilePhotoPath !== undefined) {
+      data.profilePhotoPath =
+        typeof profilePhotoPath === "string" && profilePhotoPath.trim()
+          ? profilePhotoPath.trim()
+          : null;
+    }
 
     if (req.user.role === "operator" && !operatorCanManageRole(role ?? target.role)) {
       throw httpError(403, "Operator hanya boleh mengelola user juri");

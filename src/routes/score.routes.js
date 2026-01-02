@@ -3,32 +3,21 @@ const express = require("express");
 const prisma = require("../lib/prisma");
 const { httpError, parseId } = require("../error");
 const { auth, requireRole } = require("../middleware/auth");
+const asyncHandler = require("../utils/async-handler");
+const {
+  parsePositiveInt,
+  parseOptionalPositiveInt,
+  parseNullableNumber,
+  parseNumber,
+  parseOptionalBoolean,
+} = require("../utils/parsers");
+const {
+  requireOperatorFocusEventId,
+  ensureOperatorEventAccess,
+  ensureOperatorScoreAccess,
+} = require("../utils/operator-access");
 
 const router = express.Router();
-
-async function requireOperatorFocusEventId(userId) {
-  const operator = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { focusEventId: true },
-  });
-
-  if (!operator?.focusEventId) {
-    throw httpError(400, "Operator belum memilih event fokus");
-  }
-
-  return operator.focusEventId;
-}
-
-async function ensureOperatorCanAccessEvent(req, eventId) {
-  if (req.user.role !== "operator") return;
-  const focusEventId = await requireOperatorFocusEventId(req.user.id);
-  if (eventId !== focusEventId) {
-    throw httpError(
-      403,
-      "Operator hanya boleh mengelola score pada event fokus"
-    );
-  }
-}
 
 /**
  * GET /api/scores
@@ -42,25 +31,43 @@ async function ensureOperatorCanAccessEvent(req, eventId) {
  *  - juri: hanya skor yang dia buat (juriId = req.user.id)
  *  - peserta: hanya skor untuk peserta miliknya
  */
-router.get("/", auth, async (req, res, next) => {
-  try {
+router.get(
+  "/",
+  auth,
+  asyncHandler(async (req, res) => {
     const { eventId, pesertaId, juriId } = req.query;
     const where = {};
 
-    if (eventId) where.eventId = Number(eventId);
-    if (pesertaId) where.pesertaId = Number(pesertaId);
+    const parsedEventId = parseOptionalPositiveInt(eventId, "eventId");
+    const parsedPesertaId = parseOptionalPositiveInt(pesertaId, "pesertaId");
+    const parsedJuriId = parseOptionalPositiveInt(juriId, "juriId");
 
-    if (req.user.role === "admin" || req.user.role === "operator") {
-      if (juriId) where.juriId = Number(juriId);
-      if (req.user.role === "operator") {
-        const focusEventId = await requireOperatorFocusEventId(req.user.id);
-        if (where.eventId && where.eventId !== focusEventId) {
-          throw httpError(
-            403,
-            "Operator hanya boleh melihat score pada event fokus"
-          );
-        }
-        where.eventId = focusEventId;
+    if (parsedEventId !== undefined) {
+      where.eventId = parsedEventId;
+    }
+
+    if (parsedPesertaId !== undefined) {
+      where.pesertaId = parsedPesertaId;
+    }
+
+    if (req.user.role === "admin") {
+      if (parsedJuriId !== undefined) {
+        where.juriId = parsedJuriId;
+      }
+    } else if (req.user.role === "operator") {
+      const focusEventId = await requireOperatorFocusEventId(req.user.id);
+      if (
+        parsedEventId !== undefined &&
+        parsedEventId !== focusEventId
+      ) {
+        throw httpError(
+          403,
+          "Operator hanya boleh melihat score pada event fokus"
+        );
+      }
+      where.eventId = focusEventId;
+      if (parsedJuriId !== undefined) {
+        where.juriId = parsedJuriId;
       }
     } else if (req.user.role === "juri") {
       where.juriId = req.user.id;
@@ -90,16 +97,16 @@ router.get("/", auth, async (req, res, next) => {
     });
 
     res.json(scores);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 /**
  * GET /api/scores/:id
  */
-router.get("/:id", auth, async (req, res, next) => {
-  try {
+router.get(
+  "/:id",
+  auth,
+  asyncHandler(async (req, res) => {
     const id = parseId(req.params.id);
 
     const score = await prisma.score.findUnique({
@@ -118,11 +125,14 @@ router.get("/:id", auth, async (req, res, next) => {
 
     if (!score) throw httpError(404, "Score tidak ditemukan");
 
-    if (req.user.role === "admin" || req.user.role === "operator") {
-      // full akses
-      if (req.user.role === "operator") {
-        await ensureOperatorCanAccessEvent(req, score.eventId);
-      }
+    if (req.user.role === "admin") {
+      // full access
+    } else if (req.user.role === "operator") {
+      await ensureOperatorEventAccess(
+        req.user,
+        score.eventId,
+        "Operator hanya boleh melihat score pada event fokus"
+      );
     } else if (req.user.role === "juri") {
       if (score.juriId !== req.user.id) {
         throw httpError(403, "Tidak boleh melihat score juri lain");
@@ -136,200 +146,232 @@ router.get("/:id", auth, async (req, res, next) => {
     }
 
     res.json(score);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
-/**
- * POST /api/scores
- * Role: admin, juri
- *
- * Body:
- *  - eventId (number, required)
- *  - pesertaId (number, required)
- *  - nilai (number, optional – boleh null jika memakai detail score)
- *  - catatan (string, optional)
- *  - details (optional array):
- *      [
- *        { kriteria: "Musik", nilai: 85, bobot: 0.4 },
- *        { kriteria: "Visual", nilai: 88, bobot: 0.3 },
- *        ...
- *      ]
- */
 router.post(
   "/",
   auth,
   requireRole("admin", "operator"),
-  async (req, res, next) => {
-    try {
-      const {
-        eventId,
-        pesertaId,
-        nilai,
-        catatan,
-        details,
-        juriId: bodyJuriId,
-      } = req.body;
+  asyncHandler(async (req, res) => {
+    const {
+      eventId,
+      pesertaId,
+      nilai,
+      catatan,
+      details,
+      juriId: bodyJuriId,
+      useManualNilai,
+    } = req.body;
 
-      if (!eventId || !pesertaId) {
-        throw httpError(400, "eventId dan pesertaId wajib diisi");
-      }
+    const parsedEventId = parsePositiveInt(eventId, "eventId");
+    const parsedPesertaId = parsePositiveInt(pesertaId, "pesertaId");
+    const parsedJuriId = parsePositiveInt(bodyJuriId, "juriId");
+    let parsedNilai = parseNullableNumber(nilai, "nilai", {
+      allowUndefined: true,
+    });
+    const manualFlag = parseOptionalBoolean(
+      useManualNilai,
+      "useManualNilai"
+    ) ?? false;
 
-      const parsedEventId = Number(eventId);
-      const parsedPesertaId = Number(pesertaId);
-      const nilaiProvided =
-        nilai !== undefined &&
-        nilai !== null &&
-        String(nilai).trim() !== "";
-      let parsedNilai = null;
-
-      if (
-        Number.isNaN(parsedEventId) ||
-        Number.isNaN(parsedPesertaId)
-      ) {
-        throw httpError(400, "eventId dan pesertaId harus number");
-      }
-
-      if (nilaiProvided) {
-        parsedNilai = Number(nilai);
-        if (Number.isNaN(parsedNilai)) {
-          throw httpError(400, "nilai harus number");
-        }
-      }
-
-      const [event, peserta] = await Promise.all([
-        prisma.event.findUnique({ where: { id: parsedEventId } }),
-        prisma.peserta.findUnique({ where: { id: parsedPesertaId } }),
-      ]);
-
-      if (!event) throw httpError(404, "Event tidak ditemukan");
-      if (!peserta) throw httpError(404, "Peserta tidak ditemukan");
-      if (req.user.role === "operator") {
-        await ensureOperatorCanAccessEvent(req, parsedEventId);
-      }
-      if (!bodyJuriId) {
-        throw httpError(400, "juriId wajib dipilih");
-      }
-      const juriId = Number(bodyJuriId);
-      if (Number.isNaN(juriId)) {
-        throw httpError(400, "juriId tidak valid");
-      }
-      const juriUser = await prisma.user.findUnique({
-        where: { id: juriId },
-        select: { id: true, role: true },
-      });
-      if (!juriUser) {
-        throw httpError(404, "User juri tidak ditemukan");
-      }
-      if (juriUser.role !== "juri") {
-        throw httpError(400, "juriId harus user dengan role juri");
-      }
-
-      // pastikan tidak duplikat untuk kombinasi event+peserta+juri
-      const existing = await prisma.score.findUnique({
-        where: {
-          eventId_pesertaId_juriId: {
-            eventId: parsedEventId,
-            pesertaId: parsedPesertaId,
-            juriId,
-          },
-        },
-      });
-
-      if (existing) {
+    if (manualFlag) {
+      if (parsedNilai == null) {
         throw httpError(
           400,
-          "Score sudah ada untuk kombinasi event, peserta, dan juri ini. Gunakan PUT untuk update."
+          "nilai wajib diisi saat menggunakan nilai manual"
         );
       }
+      if (parsedNilai < 0 || parsedNilai > 100) {
+        throw httpError(400, "nilai harus berada dalam rentang 0-100");
+      }
+      parsedNilai = Math.round(parsedNilai);
+    } else {
+      parsedNilai = null;
+    }
 
-      const created = await prisma.score.create({
-        data: {
+    const [event, peserta, juriUser] = await Promise.all([
+      prisma.event.findUnique({ where: { id: parsedEventId } }),
+      prisma.peserta.findUnique({ where: { id: parsedPesertaId } }),
+      prisma.user.findUnique({
+        where: { id: parsedJuriId },
+        select: { id: true, role: true },
+      }),
+    ]);
+
+    if (!event) throw httpError(404, "Event tidak ditemukan");
+    if (!peserta) throw httpError(404, "Peserta tidak ditemukan");
+    if (!juriUser) throw httpError(404, "User juri tidak ditemukan");
+    if (juriUser.role !== "juri") {
+      throw httpError(400, "juriId harus user dengan role juri");
+    }
+
+    await ensureOperatorEventAccess(
+      req.user,
+      parsedEventId,
+      "Operator hanya boleh mengelola score pada event fokus"
+    );
+
+    const existing = await prisma.score.findUnique({
+      where: {
+        eventId_pesertaId_juriId: {
           eventId: parsedEventId,
           pesertaId: parsedPesertaId,
-          juriId,
-          nilai: nilaiProvided ? parsedNilai : null,
-          catatan: catatan ?? null,
-          details: Array.isArray(details)
-            ? {
-                create: details.map((d) => ({
-                  kriteria: d.kriteria,
-                  nilai: Number(d.nilai),
-                  bobot:
-                    d.bobot !== undefined && d.bobot !== null
-                      ? Number(d.bobot)
-                      : null,
-                })),
-              }
-            : undefined,
+          juriId: parsedJuriId,
         },
-        include: {
-          details: true,
-        },
-      });
+      },
+    });
 
-      res.status(201).json(created);
-    } catch (err) {
-      next(err);
+    if (existing) {
+      throw httpError(
+        400,
+        "Score sudah ada untuk kombinasi event, peserta, dan juri ini. Gunakan PUT untuk update."
+      );
     }
-  }
+
+    let detailsInput;
+    if (Array.isArray(details)) {
+      detailsInput = {
+        create: details.map((item, index) => {
+          const kriteria = String(item.kriteria || "").trim();
+          if (!kriteria) {
+            throw httpError(400, `details[${index}].kriteria wajib diisi`);
+          }
+          const detailNilai = parseNumber(
+            item.nilai,
+            `details[${index}].nilai`
+          );
+          const detailBobot = parseNullableNumber(
+            item.bobot,
+            `details[${index}].bobot`,
+            { allowUndefined: true }
+          );
+
+          return {
+            kriteria,
+            nilai: detailNilai,
+            bobot: detailBobot ?? null,
+          };
+        }),
+      };
+    }
+
+    const created = await prisma.score.create({
+      data: {
+        eventId: parsedEventId,
+        pesertaId: parsedPesertaId,
+        juriId: parsedJuriId,
+        nilai: parsedNilai,
+        useManualNilai: manualFlag,
+        catatan:
+          catatan === undefined
+            ? null
+            : String(catatan).trim() || null,
+        details: detailsInput,
+      },
+      include: {
+        details: true,
+      },
+    });
+
+    res.status(201).json(created);
+  })
 );
 
 /**
  * PUT /api/scores/:id
- * Role: admin, juri
- * - Juri hanya boleh update skor miliknya sendiri
+ * Role: admin, operator
+ * - Operator dibatasi pada event fokus
  * - Hanya update field di Score, tidak sentuh details
  */
 router.put(
   "/:id",
   auth,
   requireRole("admin", "operator"),
-  async (req, res, next) => {
-    try {
-      const id = parseId(req.params.id);
-      const { nilai, catatan } = req.body;
+  asyncHandler(async (req, res) => {
+    const id = parseId(req.params.id);
+    const { nilai, catatan, useManualNilai } = req.body;
 
-      const score = await prisma.score.findUnique({ where: { id } });
-      if (!score) throw httpError(404, "Score tidak ditemukan");
+    const score = await prisma.score.findUnique({ where: { id } });
+    if (!score) throw httpError(404, "Score tidak ditemukan");
 
-      if (req.user.role === "operator") {
-        await ensureOperatorCanAccessEvent(req, score.eventId);
-      }
+    await ensureOperatorScoreAccess(
+      req.user,
+      score,
+      "Operator hanya boleh mengelola score pada event fokus"
+    );
 
-      const data = {};
+    const data = {};
 
-      if (nilai !== undefined) {
-        if (nilai === null || String(nilai).trim() === "") {
-          data.nilai = null;
-        } else {
-          const parsedNilai = Number(nilai);
-          if (Number.isNaN(parsedNilai)) {
-            throw httpError(400, "nilai harus number");
-          }
-          data.nilai = parsedNilai;
-        }
-      }
-
-      if (catatan !== undefined) {
-        data.catatan = catatan;
-      }
-
-      if (Object.keys(data).length === 0) {
-        throw httpError(400, "Tidak ada field yang diupdate");
-      }
-
-      const updated = await prisma.score.update({
-        where: { id },
-        data,
-      });
-
-      res.json(updated);
-    } catch (err) {
-      next(err);
+    const parsedUseManual = parseOptionalBoolean(
+      useManualNilai,
+      "useManualNilai"
+    );
+    if (parsedUseManual !== undefined) {
+      data.useManualNilai = parsedUseManual;
     }
-  }
+
+    const nilaiProvided = nilai !== undefined;
+    let parsedNilai;
+    if (nilaiProvided) {
+      parsedNilai = parseNullableNumber(nilai, "nilai", {
+        allowUndefined: true,
+      });
+      if (parsedNilai != null) {
+        if (parsedNilai < 0 || parsedNilai > 100) {
+          throw httpError(400, "nilai harus berada dalam rentang 0-100");
+        }
+        parsedNilai = Math.round(parsedNilai);
+      }
+    }
+
+    if (parsedUseManual === true) {
+      if (parsedNilai == null) {
+        if (!nilaiProvided && score.nilai != null) {
+          // keep existing manual value
+        } else {
+          throw httpError(
+            400,
+            "nilai wajib diisi saat menggunakan nilai manual"
+          );
+        }
+      } else {
+        data.nilai = parsedNilai;
+      }
+    } else if (parsedUseManual === false) {
+      data.nilai = null;
+    } else if (nilaiProvided) {
+      if (score.useManualNilai) {
+        if (parsedNilai == null) {
+          throw httpError(
+            400,
+            "nilai wajib diisi saat menggunakan nilai manual"
+          );
+        }
+        data.nilai = parsedNilai;
+      } else {
+        data.nilai = null;
+      }
+    }
+
+    if (catatan !== undefined) {
+      data.catatan =
+        catatan === null || catatan === undefined
+          ? null
+          : String(catatan).trim() || null;
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw httpError(400, "Tidak ada field yang diupdate");
+    }
+
+    const updated = await prisma.score.update({
+      where: { id },
+      data,
+    });
+
+    res.json(updated);
+  })
 );
 
 /**
@@ -341,73 +383,65 @@ router.delete(
   "/by-peserta",
   auth,
   requireRole("admin", "operator"),
-  async (req, res, next) => {
-    try {
-      const eventId = Number(req.query.eventId);
-      const pesertaId = Number(req.query.pesertaId);
+  asyncHandler(async (req, res) => {
+    const eventId = parsePositiveInt(req.query.eventId, "eventId");
+    const pesertaId = parsePositiveInt(req.query.pesertaId, "pesertaId");
 
-      if (!eventId || !pesertaId) {
-        throw httpError(400, "eventId dan pesertaId wajib diisi");
-      }
+    await ensureOperatorEventAccess(
+      req.user,
+      eventId,
+      "Operator hanya boleh menghapus score pada event fokus"
+    );
 
-      if (Number.isNaN(eventId) || Number.isNaN(pesertaId)) {
-        throw httpError(400, "eventId dan pesertaId harus number");
-      }
+    const result = await prisma.score.deleteMany({
+      where: {
+        eventId,
+        pesertaId,
+      },
+    });
 
-      if (req.user.role === "operator") {
-        await ensureOperatorCanAccessEvent(req, eventId);
-      }
-
-      const result = await prisma.score.deleteMany({
-        where: {
-          eventId,
-          pesertaId,
-        },
-      });
-
-      res.json({
-        message: "Score peserta berhasil dihapus",
-        deletedScores: result.count,
-      });
-    } catch (err) {
-      next(err);
-    }
-  }
+    res.json({
+      message: "Score peserta berhasil dihapus",
+      deletedScores: result.count,
+    });
+  })
 );
 
 /**
  * DELETE /api/scores/:id
- * Role: admin only
+ * Role: admin, operator
  * - otomatis menghapus ScoreDetail karena relasi onDelete default
  */
 router.delete(
   "/:id",
   auth,
   requireRole("admin", "operator"),
-  async (req, res, next) => {
-    try {
-      const id = parseId(req.params.id);
+  asyncHandler(async (req, res) => {
+    const id = parseId(req.params.id);
 
-      if (req.user.role === "operator") {
-        const existing = await prisma.score.findUnique({
-          where: { id },
-          select: { eventId: true },
-        });
-        if (!existing) {
-          throw httpError(404, "Score tidak ditemukan");
-        }
-        await ensureOperatorCanAccessEvent(req, existing.eventId);
-      }
-
-      await prisma.score.delete({
+    if (req.user.role === "operator") {
+      const score = await prisma.score.findUnique({
         where: { id },
+        select: { eventId: true },
       });
 
-      res.json({ message: "Score berhasil dihapus" });
-    } catch (err) {
-      next(err);
+      if (!score) {
+        throw httpError(404, "Score tidak ditemukan");
+      }
+
+      await ensureOperatorEventAccess(
+        req.user,
+        score.eventId,
+        "Operator hanya boleh menghapus score pada event fokus"
+      );
     }
-  }
+
+    await prisma.score.delete({
+      where: { id },
+    });
+
+    res.json({ message: "Score berhasil dihapus" });
+  })
 );
 
 module.exports = router;

@@ -11,15 +11,16 @@ generator client {
 // ===================== USER =====================
 //
 model User {
-  id           Int     @id @default(autoincrement())
-  email        String  @unique
-  username     String
-  password     String
-  role         String
-  isActive     Boolean @default(false)
-  nisnNta      String?
-  alamat       String?
-  focusEventId Int?
+  id               Int     @id @default(autoincrement())
+  email            String  @unique
+  username         String
+  password         String
+  role             String
+  isActive         Boolean @default(false)
+  nisnNta          String?
+  alamat           String?
+  focusEventId     Int?
+  profilePhotoPath String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
@@ -53,6 +54,71 @@ model Berita {
 }
 
 //
+// ===================== GALLERY =====================
+//
+model GalleryItem {
+  id          Int     @id @default(autoincrement())
+  title       String
+  caption     String?
+  photoPath   String
+  order       Int     @default(0)
+  isPublished Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+}
+
+model Partnership {
+  id          Int     @id @default(autoincrement())
+  name        String
+  role        String?
+  description String?
+  logoPath    String?
+  type        String
+  order       Int     @default(0)
+  isPublished Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  @@index([type])
+  @@index([isPublished])
+}
+
+model Merchandise {
+  id          Int     @id @default(autoincrement())
+  name        String
+  productCode String  @unique
+  category    String?
+  description String?
+  price       Int?
+  stock       Int?
+  photoPath   String?
+  isPublished Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  @@index([isPublished])
+  @@index([category])
+}
+
+model AppSetting {
+  id    Int     @id @default(autoincrement())
+  key   String  @unique
+  value String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+//
 // ===================== EVENT =====================
 //
 model Event {
@@ -66,7 +132,6 @@ model Event {
   status         String?
   kuota          Int?
   biaya          Int?
-  kategori       String?
   isFeatured     Boolean  @default(false)
 
   createdAt DateTime @default(now())
@@ -79,7 +144,27 @@ model Event {
   partisipasi  Partisipasi[]
   scores       Score[]
   berita       Berita[]
-  focusedUsers User[]        @relation("OperatorFocusEvent")
+  categories   EventCategory[]
+  focusedUsers User[]          @relation("OperatorFocusEvent")
+}
+
+model EventCategory {
+  id          Int     @id @default(autoincrement())
+  eventId     Int
+  name        String
+  description String?
+  quota       Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy Int?
+  updatedBy Int?
+
+  event   Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  peserta Peserta[]
+
+  @@unique([eventId, name])
+  @@index([eventId])
 }
 
 //
@@ -89,6 +174,7 @@ model Peserta {
   id                 Int      @id @default(autoincrement())
   userId             Int
   eventId            Int
+  eventCategoryId    Int?
   noPeserta          String?
   namaTim            String
   namaPerwakilan     String?
@@ -100,8 +186,9 @@ model Peserta {
   createdBy Int?
   updatedBy Int?
 
-  user  User  @relation(fields: [userId], references: [id])
-  event Event @relation(fields: [eventId], references: [id])
+  user          User           @relation(fields: [userId], references: [id])
+  event         Event          @relation(fields: [eventId], references: [id])
+  eventCategory EventCategory? @relation(fields: [eventCategoryId], references: [id], onDelete: SetNull)
 
   detailPeserta DetailPeserta[]
   scores        Score[]
@@ -110,6 +197,7 @@ model Peserta {
 
   @@unique([userId, eventId]) // 1 user tidak bisa daftar event yang sama dua kali
   @@index([userId])
+  @@index([eventCategoryId])
 }
 
 //
@@ -181,13 +269,14 @@ model Partisipasi {
 // ===================== SCORE =====================
 //
 model Score {
-  id        Int     @id @default(autoincrement())
-  eventId   Int
-  pesertaId Int
-  juriId    Int
-  nilai     Int?
-  catatan   String?
-  evidence  String?
+  id             Int     @id @default(autoincrement())
+  eventId        Int
+  pesertaId      Int
+  juriId         Int
+  nilai          Int?
+  useManualNilai Boolean @default(false)
+  catatan        String?
+  evidence       String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt

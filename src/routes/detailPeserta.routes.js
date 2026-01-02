@@ -2,21 +2,41 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
 const { httpError, parseId } = require("../error");
+const asyncHandler = require("../utils/async-handler");
+const { parseOptionalPositiveInt } = require("../utils/parsers");
 const { auth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
 
+async function getOperatorFocusEventId(userId) {
+  const operator = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { focusEventId: true },
+  });
+
+  if (!operator?.focusEventId) {
+    throw httpError(400, "Operator belum memilih event fokus");
+  }
+
+  return operator.focusEventId;
+}
+
 // GET /api/detail-peserta
-router.get("/", async (req, res, next) => {
-  try {
+router.get(
+  "/",
+  asyncHandler(async (req, res) => {
     const { pesertaId, eventId } = req.query;
     const where = {};
-    if (pesertaId) where.pesertaId = Number(pesertaId);
-
     const pesertaFilter = {};
 
-    if (eventId) {
-      pesertaFilter.eventId = Number(eventId);
+    const parsedPesertaId = parseOptionalPositiveInt(pesertaId, "pesertaId");
+    if (parsedPesertaId !== undefined) {
+      where.pesertaId = parsedPesertaId;
+    }
+
+    const parsedEventId = parseOptionalPositiveInt(eventId, "eventId");
+    if (parsedEventId !== undefined) {
+      pesertaFilter.eventId = parsedEventId;
     }
 
     if (req.user.role === "peserta") {
@@ -24,15 +44,11 @@ router.get("/", async (req, res, next) => {
     }
 
     if (req.user.role === "operator") {
-      const operator = await prisma.user.findUnique({
-        where: { id: req.user.id },
-        select: { focusEventId: true },
-      });
-
-      if (!operator?.focusEventId) {
-        throw httpError(400, "Operator belum memilih event fokus");
+      const focusEventId = await getOperatorFocusEventId(req.user.id);
+      if (parsedEventId !== undefined && parsedEventId !== focusEventId) {
+        throw httpError(403, "Operator hanya boleh melihat peserta pada event fokusnya");
       }
-      pesertaFilter.eventId = operator.focusEventId;
+      pesertaFilter.eventId = focusEventId;
     }
 
     if (Object.keys(pesertaFilter).length) {
@@ -55,14 +71,13 @@ router.get("/", async (req, res, next) => {
     });
 
     res.json(details);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 // GET /api/detail-peserta/:id
-router.get("/:id", async (req, res, next) => {
-  try {
+router.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
     const id = parseId(req.params.id);
 
     const detail = await prisma.detailPeserta.findUnique({
@@ -87,23 +102,15 @@ router.get("/:id", async (req, res, next) => {
     }
 
     if (req.user.role === "operator") {
-      const operator = await prisma.user.findUnique({
-        where: { id: req.user.id },
-        select: { focusEventId: true },
-      });
-      if (!operator?.focusEventId) {
-        throw httpError(400, "Operator belum memilih event fokus");
-      }
-      if (detail.peserta.eventId !== operator.focusEventId) {
+      const focusEventId = await getOperatorFocusEventId(req.user.id);
+      if (detail.peserta.eventId !== focusEventId) {
         throw httpError(403, "Tidak boleh mengakses peserta di event lain");
       }
     }
 
     res.json(detail);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 // POST /api/detail-peserta
 router.post("/", auth, requireRole("admin", "operator", "peserta"), async (req, res, next) => {

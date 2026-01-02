@@ -1,7 +1,32 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
+const asyncHandler = require("../utils/async-handler");
+const { parsePositiveInt, parseOptionalPositiveInt } = require("../utils/parsers");
 
 const router = express.Router();
+const MERCH_WHATSAPP_KEY = "merch.whatsapp";
+
+function readNumberEnv(name, fallback, min) {
+  const raw = Number(process.env[name]);
+  if (Number.isFinite(raw)) {
+    if (typeof min === "number" && raw < min) {
+      return fallback;
+    }
+    return raw;
+  }
+  return fallback;
+}
+
+const EVENTS_QUERY_LIMIT = readNumberEnv("PUBLIC_LANDING_EVENTS_LIMIT", 8, 1);
+const EVENTS_SECTION_LIMIT = readNumberEnv("PUBLIC_LANDING_EVENTS_SECTION_LIMIT", 4, 1);
+const NEWS_QUERY_LIMIT = readNumberEnv("PUBLIC_LANDING_NEWS_LIMIT", 4, 1);
+const NEWS_EXCERPT_LENGTH = readNumberEnv("PUBLIC_LANDING_NEWS_EXCERPT", 160, 40);
+const HEADLINE_EXCERPT_LENGTH = readNumberEnv("PUBLIC_LANDING_HEADLINE_EXCERPT", 220, 60);
+const CHAMPIONS_QUERY_LIMIT = readNumberEnv("PUBLIC_LANDING_CHAMPIONS_LIMIT", 4, 1);
+const MERCHANDISE_LIMIT = readNumberEnv("PUBLIC_LANDING_MERCH_LIMIT", 6, 1);
+const GALLERY_QUERY_LIMIT = readNumberEnv("PUBLIC_LANDING_GALLERY_LIMIT", 10, 1);
+const COLLABORATION_LIMIT = readNumberEnv("PUBLIC_LANDING_COLLABORATION_LIMIT", 12, 1);
+const SPONSOR_LIMIT = readNumberEnv("PUBLIC_LANDING_SPONSOR_LIMIT", 12, 1);
 
 function normalizeStatus(status) {
   if (!status) return "upcoming";
@@ -9,6 +34,26 @@ function normalizeStatus(status) {
 }
 
 function mapEventCard(event) {
+  const categories = Array.isArray(event?.categories)
+    ? event.categories.map((category) => {
+        const participantCount = category._count?.peserta || 0;
+        const quota = category.quota != null ? Number(category.quota) : null;
+        const remaining = quota != null ? Math.max(quota - participantCount, 0) : null;
+        return {
+          id: category.id,
+          name: category.name,
+          description: category.description,
+          quota,
+          participantCount,
+          remaining,
+        };
+      })
+    : [];
+
+  const categoryLabel = categories.length
+    ? categories.map((category) => category.name).join(", ")
+    : "Event Lainnya";
+
   return {
     id: event.id,
     name: event.namaEvent,
@@ -17,7 +62,8 @@ function mapEventCard(event) {
     location: event.tempatEvent,
     venue: event.venue,
     status: normalizeStatus(event.status),
-    category: event.kategori || "Event Lainnya",
+    category: categoryLabel,
+    categories,
     participantCount: event._count?.peserta || 0,
     cover: event.photoPath || null,
     isFeatured: !!event.isFeatured,
@@ -36,6 +82,7 @@ function summarizeHeroEvent(event) {
     venue: mapped.venue,
     status: mapped.status,
     category: mapped.category,
+    categories: mapped.categories,
     participantCount: mapped.participantCount,
     cover: mapped.cover,
     isFeatured: mapped.isFeatured,
@@ -45,13 +92,19 @@ function summarizeHeroEvent(event) {
   };
 }
 
-router.get("/landing", async (req, res) => {
-  try {
+router.get(
+  "/landing",
+  asyncHandler(async (req, res) => {
     const [
       eventCards,
       categoryGroups,
       newsItems,
+      merchandiseItems,
+      merchandiseContactSetting,
       championItems,
+      galleryItems,
+      collaborationItems,
+      sponsorItems,
       totalEvents,
       activeEvents,
       totalTeams,
@@ -59,18 +112,25 @@ router.get("/landing", async (req, res) => {
     ] = await Promise.all([
       prisma.event.findMany({
         orderBy: [{ isFeatured: "desc" }, { tanggalEvent: "asc" }],
-        take: 8,
+        take: EVENTS_QUERY_LIMIT,
+        include: {
+          _count: { select: { peserta: true } },
+          categories: {
+            orderBy: { name: "asc" },
+            include: {
+              _count: { select: { peserta: true } },
+            },
+          },
+        },
+      }),
+      prisma.eventCategory.findMany({
         include: {
           _count: { select: { peserta: true } },
         },
       }),
-      prisma.event.groupBy({
-        by: ["kategori"],
-        _count: { _all: true },
-      }),
       prisma.berita.findMany({
         orderBy: { tanggal: "desc" },
-        take: 4,
+        take: NEWS_QUERY_LIMIT,
         include: {
           event: {
             select: {
@@ -81,9 +141,15 @@ router.get("/landing", async (req, res) => {
           },
         },
       }),
+      prisma.merchandise.findMany({
+        where: { isPublished: true },
+        orderBy: [{ productCode: "asc" }, { createdAt: "desc" }],
+        take: MERCHANDISE_LIMIT,
+      }),
+      prisma.appSetting.findUnique({ where: { key: MERCH_WHATSAPP_KEY } }),
       prisma.juara.findMany({
         orderBy: { createdAt: "desc" },
-        take: 4,
+        take: CHAMPIONS_QUERY_LIMIT,
         include: {
           event: {
             select: {
@@ -99,6 +165,21 @@ router.get("/landing", async (req, res) => {
           },
         },
       }),
+      prisma.galleryItem.findMany({
+        where: { isPublished: true },
+        orderBy: [{ order: "asc" }, { createdAt: "desc" }],
+        take: GALLERY_QUERY_LIMIT,
+      }),
+      prisma.partnership.findMany({
+        where: { isPublished: true, type: "collaboration" },
+        orderBy: [{ order: "asc" }, { createdAt: "desc" }],
+        take: COLLABORATION_LIMIT,
+      }),
+      prisma.partnership.findMany({
+        where: { isPublished: true, type: "sponsorship" },
+        orderBy: [{ order: "asc" }, { createdAt: "desc" }],
+        take: SPONSOR_LIMIT,
+      }),
       prisma.event.count(),
       prisma.event.count({
         where: {
@@ -113,7 +194,6 @@ router.get("/landing", async (req, res) => {
 
     const mappedEvents = eventCards.map(mapEventCard);
 
-    // Pilih hero dari raw eventCards SEBELUM di-map, jadi field asli tanggalEvent tetap ada
     const heroEventRaw =
       eventCards.find((event) => !!event.isFeatured) ||
       eventCards.find((event) => (event.status || "").toLowerCase() === "open") ||
@@ -123,10 +203,26 @@ router.get("/landing", async (req, res) => {
 
     const heroEvent = summarizeHeroEvent(heroEventRaw);
 
-    const categories = categoryGroups
-      .map((group) => ({
-        name: group.kategori || "Event Lainnya",
-        total: group._count._all,
+    const categoryStatsMap = new Map();
+    categoryGroups.forEach((category) => {
+      const key = category.name || "Event Lainnya";
+      const existing = categoryStatsMap.get(key) || {
+        name: key,
+        totalEvents: 0,
+        totalTeams: 0,
+      };
+
+      existing.totalEvents += 1;
+      existing.totalTeams += category._count?.peserta || 0;
+
+      categoryStatsMap.set(key, existing);
+    });
+
+    const categories = Array.from(categoryStatsMap.values())
+      .map((item) => ({
+        name: item.name,
+        total: item.totalEvents,
+        teams: item.totalTeams,
       }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 4);
@@ -134,7 +230,7 @@ router.get("/landing", async (req, res) => {
     const news = newsItems.map((item) => ({
       id: item.id,
       title: item.title,
-      excerpt: item.deskripsi?.slice(0, 160) || "",
+      excerpt: item.deskripsi?.slice(0, NEWS_EXCERPT_LENGTH) || "",
       date: item.tanggal,
       category: (item.tags && item.tags[0]) || "Pengumuman",
       tags: item.tags || [],
@@ -148,6 +244,31 @@ router.get("/landing", async (req, res) => {
         : null,
     }));
 
+    const merchandise = merchandiseItems.map((item) => ({
+      id: item.id,
+      name: item.name,
+      productCode: item.productCode,
+      description: item.description || "",
+      price: item.price ?? null,
+      stock: item.stock ?? null,
+      photoPath: item.photoPath || null,
+    }));
+    const merchandiseContact = {
+      whatsappNumber: merchandiseContactSetting?.value || null,
+    };
+
+    const headlineRaw = newsItems.find((item) => item.photoPath) || newsItems[0] || null;
+    const headlineNews = headlineRaw
+      ? {
+          id: headlineRaw.id,
+          title: headlineRaw.title,
+          date: headlineRaw.tanggal,
+          excerpt: headlineRaw.deskripsi?.slice(0, HEADLINE_EXCERPT_LENGTH) || "",
+          photoPath: headlineRaw.photoPath || null,
+          category: (headlineRaw.tags && headlineRaw.tags[0]) || null,
+        }
+      : null;
+
     const champions = championItems.map((item) => ({
       id: item.id,
       rank: item.juara,
@@ -159,15 +280,41 @@ router.get("/landing", async (req, res) => {
             date: item.event.tanggalEvent,
           }
         : null,
-      category: item.kategori || "Kompetisi",
+      category: item.kategori || null,
     }));
 
+    const gallery = galleryItems.map((item) => ({
+      id: item.id,
+      title: item.title,
+      caption: item.caption || null,
+      photoPath: item.photoPath,
+      order: item.order,
+    }));
+
+    const mapPartnership = (item) => ({
+      id: item.id,
+      name: item.name,
+      role: item.role || "",
+      description: item.description || "",
+      logo: item.logoPath || null,
+      order: item.order,
+    });
+
+    const collaborations = collaborationItems.map(mapPartnership);
+    const sponsors = sponsorItems.map(mapPartnership);
+
     res.json({
-      heroEvent: heroEvent,
-      events: mappedEvents.slice(0, 4),
+      heroEvent,
+      events: mappedEvents.slice(0, EVENTS_SECTION_LIMIT),
       categories,
       news,
+      headlineNews,
+      merchandise,
+      merchandiseContact,
       champions,
+      gallery,
+      collaborations,
+      sponsors,
       stats: {
         totalEvents,
         activeEvents,
@@ -175,28 +322,50 @@ router.get("/landing", async (req, res) => {
         individualMembers,
       },
     });
-  } catch (err) {
-    console.error("GET /public/landing error:", err);
-    res
-      .status(500)
-      .json({ message: "Gagal mengambil data landing", error: err.message });
-  }
-});
+  })
+);
 
-router.get("/champions", async (req, res) => {
-  try {
-    let page = Number(req.query.page || 1);
-    let limit = Number(req.query.limit || 10);
-    if (Number.isNaN(page) || page < 1) page = 1;
-    if (Number.isNaN(limit) || limit < 1 || limit > 100) limit = 10;
+router.get(
+  "/gallery",
+  asyncHandler(async (req, res) => {
+    let limit;
+    const limitParam = parseOptionalPositiveInt(req.query.limit, "limit");
+    if (limitParam !== undefined) {
+      limit = Math.min(limitParam, 100);
+    }
+
+    const items = await prisma.galleryItem.findMany({
+      where: { isPublished: true },
+      orderBy: [{ order: "asc" }, { createdAt: "desc" }],
+      take: limit,
+    });
+
+    const data = items.map((item) => ({
+      id: item.id,
+      title: item.title,
+      caption: item.caption || null,
+      photoPath: item.photoPath,
+      order: item.order,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    }));
+
+    res.json({ data });
+  })
+);
+
+router.get(
+  "/champions",
+  asyncHandler(async (req, res) => {
+    const pageParam = parseOptionalPositiveInt(req.query.page, "page");
+    const limitParam = parseOptionalPositiveInt(req.query.limit, "limit");
+
+    const page = pageParam ?? 1;
+    const limit = Math.min(limitParam ?? 10, 100);
 
     const where = {};
-    if (req.query.eventId) {
-      const eventId = Number(req.query.eventId);
-      if (Number.isNaN(eventId)) {
-        return res.status(400).json({ message: "eventId tidak valid" });
-      }
-      where.eventId = eventId;
+    if (req.query.eventId !== undefined) {
+      where.eventId = parsePositiveInt(req.query.eventId, "eventId");
     }
 
     const total = await prisma.juara.count({ where });
@@ -259,10 +428,7 @@ router.get("/champions", async (req, res) => {
         totalPages: Math.ceil(total / limit) || 1,
       },
     });
-  } catch (err) {
-    console.error("GET /public/champions error:", err);
-    res.status(500).json({ message: "Gagal mengambil data juara", error: err.message });
-  }
-});
+  })
+);
 
 module.exports = router;

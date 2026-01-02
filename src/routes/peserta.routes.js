@@ -2,7 +2,11 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
 const { httpError, parseId } = require("../error");
-const { auth, requireRole } = require("../middleware/auth");
+const asyncHandler = require("../utils/async-handler");
+const {
+  parsePositiveInt,
+  parseOptionalPositiveInt,
+} = require("../utils/parsers");
 
 const router = express.Router();
 const ALLOWED_PESERTA_STATUS = [
@@ -44,21 +48,63 @@ async function getJuriEventIds(userId) {
     .filter((id) => typeof id === "number" && id > 0);
 }
 
+async function resolveEventCategorySelection(eventId, categoryId) {
+  const categories = await prisma.eventCategory.findMany({
+    where: { eventId },
+    select: { id: true },
+  });
+
+  if (!categories.length) {
+    if (categoryId === undefined || categoryId === null || categoryId === "") {
+      return null;
+    }
+
+    const parsedCategoryId = parsePositiveInt(categoryId, "eventCategoryId");
+    const category = await prisma.eventCategory.findUnique({
+      where: { id: parsedCategoryId },
+      select: { eventId: true },
+    });
+
+    if (!category || category.eventId !== eventId) {
+      throw httpError(400, "Kategori event tidak valid untuk event yang dipilih");
+    }
+
+    return parsedCategoryId;
+  }
+
+  if (categoryId === undefined || categoryId === null || categoryId === "") {
+    throw httpError(400, "Pilih kategori event sebelum mendaftar");
+  }
+
+  const parsedCategoryId = parsePositiveInt(categoryId, "eventCategoryId");
+  const belongs = categories.some((category) => category.id === parsedCategoryId);
+
+  if (!belongs) {
+    throw httpError(400, "Kategori event tidak valid untuk event yang dipilih");
+  }
+
+  return parsedCategoryId;
+}
+
 // GET /api/peserta
-router.get("/", async (req, res, next) => {
-  try {
+router.get(
+  "/",
+  asyncHandler(async (req, res) => {
     const { eventId, status } = req.query;
     const where = {};
 
-    if (eventId) where.eventId = Number(eventId);
-    if (req.user.role === "peserta") where.userId = req.user.id;
+    let eventFilter = parseOptionalPositiveInt(eventId, "eventId");
+
+    if (req.user.role === "peserta") {
+      where.userId = req.user.id;
+    }
 
     if (req.user.role === "operator") {
       const focusEventId = await requireOperatorFocusEventId(req.user.id);
-      if (where.eventId && where.eventId !== focusEventId) {
+      if (eventFilter !== undefined && eventFilter !== focusEventId) {
         throw httpError(403, "Operator hanya boleh melihat peserta event fokus");
       }
-      where.eventId = focusEventId;
+      eventFilter = focusEventId;
     }
 
     if (req.user.role === "juri") {
@@ -66,17 +112,26 @@ router.get("/", async (req, res, next) => {
       if (!eventIds.length) {
         return res.json([]);
       }
-      if (where.eventId) {
-        if (!eventIds.includes(where.eventId)) {
+
+      if (eventFilter !== undefined) {
+        if (!eventIds.includes(eventFilter)) {
           throw httpError(403, "Juri tidak ditugaskan pada event ini");
         }
       } else {
-        where.eventId = { in: eventIds };
+        eventFilter = { in: eventIds };
       }
     }
 
-    if (status && ALLOWED_PESERTA_STATUS.includes(status)) {
-      where.status = status;
+    if (eventFilter !== undefined) {
+      where.eventId = eventFilter;
+    }
+
+    if (status !== undefined) {
+      const normalizedStatus = String(status);
+      if (!ALLOWED_PESERTA_STATUS.includes(normalizedStatus)) {
+        throw httpError(400, "Status tidak valid");
+      }
+      where.status = normalizedStatus;
     }
 
     const peserta = await prisma.peserta.findMany({
@@ -85,6 +140,7 @@ router.get("/", async (req, res, next) => {
       include: {
         user: true,
         event: true,
+        eventCategory: true,
         detailPeserta: true,
         juara: true,
         partisipasi: true,
@@ -99,14 +155,35 @@ router.get("/", async (req, res, next) => {
     });
 
     res.json(peserta);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
+
+// GET /api/peserta/me
+router.get(
+  "/me",
+  asyncHandler(async (req, res) => {
+    const peserta = await prisma.peserta.findUnique({
+      where: { userId: req.user.id },
+      include: {
+        event: true,
+        eventCategory: true,
+        detailPeserta: true,
+        partisipasi: true,
+      },
+    });
+
+    if (!peserta) {
+      throw httpError(404, "Peserta tidak ditemukan");
+    }
+
+    res.json(peserta);
+  })
+);
 
 // GET /api/peserta/:id
-router.get("/:id", async (req, res, next) => {
-  try {
+router.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
     const id = parseId(req.params.id);
 
     const peserta = await prisma.peserta.findUnique({
@@ -114,6 +191,7 @@ router.get("/:id", async (req, res, next) => {
       include: {
         user: true,
         event: true,
+        eventCategory: true,
         detailPeserta: true,
         juara: true,
         partisipasi: true,
@@ -145,64 +223,44 @@ router.get("/:id", async (req, res, next) => {
     }
 
     res.json(peserta);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// GET /api/peserta/me
-router.get("/me", auth, requireRole("peserta","admin","juri","operator"), async (req, res, next) => {
-  try {
-    const peserta = await prisma.peserta.findUnique({
-      where: { userId: req.user.id },
-      include: {
-        event: true,
-        detailPeserta: true, 
-        partisipasi: true,
-      },
-    });
-
-    if (!peserta) {
-      return res.status(404).json({ message: "Peserta tidak ditemukan" });
-    }
-
-    res.json(peserta);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 // POST /api/peserta
-router.post("/", async (req, res, next) => {
-  try {
+router.post(
+  "/",
+  asyncHandler(async (req, res) => {
     if (!["admin", "operator", "peserta"].includes(req.user.role)) {
       throw httpError(403, "Role tidak diizinkan menambah peserta");
     }
 
-    const {
-      userId,
-      eventId,
-      namaTim,
-      namaPerwakilan,
-      detailPeserta,
-      status,
-    } = req.body;
+    const { userId, eventId, namaTim, namaPerwakilan, detailPeserta, status } =
+      req.body;
+    const { eventCategoryId } = req.body;
 
-    if (!eventId || !namaTim) {
-      throw httpError(400, "eventId dan namaTim wajib diisi");
+    if (!namaTim) {
+      throw httpError(400, "namaTim wajib diisi");
     }
 
-    let finalEventId = Number(eventId);
-    if (Number.isNaN(finalEventId)) {
-      throw httpError(400, "eventId tidak valid");
+    if (eventId === undefined || eventId === null || eventId === "") {
+      throw httpError(400, "eventId wajib diisi");
     }
 
-    let finalUserId = userId;
+    const finalEventId = parsePositiveInt(eventId, "eventId");
+
+    const finalCategoryId = await resolveEventCategorySelection(
+      finalEventId,
+      eventCategoryId
+    );
+
+    let finalUserId;
     if (req.user.role === "peserta") {
       finalUserId = req.user.id;
-    }
-    if (!finalUserId) {
-      throw httpError(400, "userId tidak valid");
+    } else {
+      if (userId === undefined || userId === null || userId === "") {
+        throw httpError(400, "userId wajib diisi");
+      }
+      finalUserId = parsePositiveInt(userId, "userId");
     }
 
     if (req.user.role === "operator") {
@@ -212,29 +270,36 @@ router.post("/", async (req, res, next) => {
       }
     }
 
-    const desiredStatus =
+    const normalizedStatus =
       req.user.role === "peserta"
         ? "pending"
         : ALLOWED_PESERTA_STATUS.includes(status)
         ? status
         : "approved";
 
+    const detailPayload = Array.isArray(detailPeserta)
+      ? detailPeserta
+          .map((item) => ({
+            namaDetail: item.namaDetail,
+            tanggalLahir: item.tanggalLahir
+              ? new Date(item.tanggalLahir)
+              : null,
+            umur: item.umur ?? null,
+          }))
+          .filter((item) => Boolean(item.namaDetail))
+      : [];
+
     const created = await prisma.peserta.create({
       data: {
         userId: finalUserId,
         eventId: finalEventId,
+        eventCategoryId: finalCategoryId,
         namaTim,
         namaPerwakilan: namaPerwakilan ?? null,
-        status: desiredStatus,
-        detailPeserta: detailPeserta?.length
+        status: normalizedStatus,
+        detailPeserta: detailPayload.length
           ? {
-              create: detailPeserta.map((d) => ({
-                namaDetail: d.namaDetail,
-                tanggalLahir: d.tanggalLahir
-                  ? new Date(d.tanggalLahir)
-                  : null,
-                umur: d.umur ?? null,
-              })),
+              create: detailPayload,
             }
           : undefined,
       },
@@ -244,20 +309,19 @@ router.post("/", async (req, res, next) => {
     });
 
     res.status(201).json(created);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 // PUT /api/peserta/:id
-router.put("/:id", async (req, res, next) => {
-  try {
+router.put(
+  "/:id",
+  asyncHandler(async (req, res) => {
     if (!["admin", "operator", "peserta"].includes(req.user.role)) {
       throw httpError(403, "Role tidak diizinkan mengubah peserta");
     }
 
     const id = parseId(req.params.id);
-    const { namaTim, namaPerwakilan, status } = req.body;
+    const { namaTim, namaPerwakilan, status, eventCategoryId } = req.body;
 
     const peserta = await prisma.peserta.findUnique({ where: { id } });
     if (!peserta) {
@@ -276,11 +340,21 @@ router.put("/:id", async (req, res, next) => {
     };
 
     if (
-      status &&
-      req.user.role !== "peserta" &&
-      ALLOWED_PESERTA_STATUS.includes(status)
+      status !== undefined &&
+      req.user.role !== "peserta"
     ) {
-      updatedData.status = status;
+      const normalizedStatus = String(status);
+      if (!ALLOWED_PESERTA_STATUS.includes(normalizedStatus)) {
+        throw httpError(400, "Status tidak valid");
+      }
+      updatedData.status = normalizedStatus;
+    }
+
+    if (eventCategoryId !== undefined && req.user.role !== "peserta") {
+      updatedData.eventCategoryId = await resolveEventCategorySelection(
+        peserta.eventId,
+        eventCategoryId
+      );
     }
 
     const updated = await prisma.peserta.update({
@@ -289,20 +363,20 @@ router.put("/:id", async (req, res, next) => {
     });
 
     res.json(updated);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
-router.patch("/:id/status", async (req, res, next) => {
-  try {
+router.patch(
+  "/:id/status",
+  asyncHandler(async (req, res) => {
     if (!["admin", "operator"].includes(req.user.role)) {
       throw httpError(403, "Hanya admin/operator yang boleh mengubah status");
     }
 
     const id = parseId(req.params.id);
     const { status } = req.body;
-    if (!ALLOWED_PESERTA_STATUS.includes(status)) {
+    const normalizedStatus = String(status);
+    if (!ALLOWED_PESERTA_STATUS.includes(normalizedStatus)) {
       throw httpError(400, "Status tidak valid");
     }
 
@@ -315,58 +389,53 @@ router.patch("/:id/status", async (req, res, next) => {
 
     const updated = await prisma.peserta.update({
       where: { id },
-      data: { status },
+      data: { status: normalizedStatus },
     });
 
     res.json({
       message: "Status peserta diperbarui",
       peserta: updated,
     });
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 function buildStatusHandler(targetStatus) {
-  return async (req, res, next) => {
-    try {
-      if (!["admin", "operator"].includes(req.user.role)) {
-        throw httpError(403, "Hanya admin/operator yang boleh mengubah status");
-      }
-
-      const id = parseId(req.params.id);
-
-      const peserta = await prisma.peserta.findUnique({ where: { id } });
-      if (!peserta) {
-        throw httpError(404, "Peserta tidak ditemukan");
-      }
-
-      await ensureOperatorCanAccessPeserta(req, peserta);
-
-      const updated = await prisma.peserta.update({
-        where: { id },
-        data: { status: targetStatus },
-      });
-
-      res.json({
-        message:
-          targetStatus === "approved"
-            ? "Pendaftaran peserta disetujui"
-            : "Pendaftaran peserta ditolak",
-        peserta: updated,
-      });
-    } catch (err) {
-      next(err);
+  return asyncHandler(async (req, res) => {
+    if (!["admin", "operator"].includes(req.user.role)) {
+      throw httpError(403, "Hanya admin/operator yang boleh mengubah status");
     }
-  };
+
+    const id = parseId(req.params.id);
+
+    const peserta = await prisma.peserta.findUnique({ where: { id } });
+    if (!peserta) {
+      throw httpError(404, "Peserta tidak ditemukan");
+    }
+
+    await ensureOperatorCanAccessPeserta(req, peserta);
+
+    const updated = await prisma.peserta.update({
+      where: { id },
+      data: { status: targetStatus },
+    });
+
+    res.json({
+      message:
+        targetStatus === "approved"
+          ? "Pendaftaran peserta disetujui"
+          : "Pendaftaran peserta ditolak",
+      peserta: updated,
+    });
+  });
 }
 
 router.patch("/:id/approve", buildStatusHandler("approved"));
 router.patch("/:id/reject", buildStatusHandler("rejected"));
 
 // DELETE /api/peserta/:id
-router.delete("/:id", async (req, res, next) => {
-  try {
+router.delete(
+  "/:id",
+  asyncHandler(async (req, res) => {
     if (!["admin", "operator", "peserta"].includes(req.user.role)) {
       throw httpError(403, "Role tidak diizinkan menghapus peserta");
     }
@@ -389,9 +458,7 @@ router.delete("/:id", async (req, res, next) => {
     });
 
     res.json({ message: "Peserta berhasil dihapus" });
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 module.exports = router;
