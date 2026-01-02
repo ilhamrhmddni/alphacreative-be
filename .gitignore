@@ -5,4 +5,8 @@ node_modules
 !.env.example
 
 /generated/prisma
+
+# Seed files - contains test credentials
+prisma/seed.js
+!prisma/seed.example.js
 /.tmp
