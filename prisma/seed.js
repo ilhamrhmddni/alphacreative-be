@@ -45,7 +45,7 @@ async function main() {
   console.log(`   Password: admin123`);
   console.log(`   Role: admin`);
   console.log(`   Status: Active\n`);
-  console.log("⚠️  Change password after first login!\n`);
+  console.log("⚠️  Change password after first login!\n");
 }
 
 main()
