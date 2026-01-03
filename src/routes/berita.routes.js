@@ -111,15 +111,16 @@ router.post("/", auth, requireRole("admin","operator"), async (req, res, next) =
   try {
     const { title, photoPath, deskripsi, tanggal, eventId, tags } = req.body;
 
-    if (!title || !deskripsi || !tanggal || !eventId) {
-      throw httpError(400, "title, deskripsi, tanggal, eventId wajib diisi");
+    if (!title || !deskripsi || !tanggal) {
+      throw httpError(400, "title, deskripsi, tanggal wajib diisi");
     }
 
-    const parsedEventId = parseEventId(eventId);
-    if (parsedEventId == null) {
-      throw httpError(400, "eventId tidak valid");
+    let parsedEventId = undefined;
+    if (eventId !== undefined && eventId !== null && eventId !== "") {
+      parsedEventId = parseEventId(eventId);
+      await ensureEventExists(parsedEventId);
     }
-    await ensureEventExists(parsedEventId);
+
     const normalizedTags = normalizeTags(tags);
 
     const created = await prisma.berita.create({
@@ -128,7 +129,7 @@ router.post("/", auth, requireRole("admin","operator"), async (req, res, next) =
         photoPath: photoPath ?? null,
         deskripsi,
         tanggal: new Date(tanggal),
-        eventId: parsedEventId,
+        ...(parsedEventId !== undefined ? { eventId: parsedEventId } : {}),
         tags: normalizedTags,
       },
       include: beritaInclude,
