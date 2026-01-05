@@ -133,6 +133,7 @@ model Event {
   kuota          Int?
   biaya          Int?
   isFeatured     Boolean  @default(false)
+  linkPeraturan  String?  // Link to event rules/regulations
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
