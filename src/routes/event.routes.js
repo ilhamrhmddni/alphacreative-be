@@ -99,6 +99,7 @@ router.post(
       photoPath,
       kuota,
       biaya,
+      linkPeraturan,
     } = req.body;
 
     if (!namaEvent || !tanggalEvent || !tempatEvent) {
@@ -120,6 +121,7 @@ router.post(
         kuota: parsedKuota,
         biaya: parsedBiaya,
         tanggalEvent: tanggal,
+        linkPeraturan: linkPeraturan || null,
       },
     });
 
@@ -144,6 +146,7 @@ router.put(
       photoPath,
       kuota,
       biaya,
+      linkPeraturan,
     } = req.body;
 
     const parsedKuota = normalizeNullableNumber(kuota, "kuota", { allowUndefined: true });
@@ -162,6 +165,7 @@ router.put(
         ...(parsedKuota !== undefined ? { kuota: parsedKuota } : {}),
         ...(parsedBiaya !== undefined ? { biaya: parsedBiaya } : {}),
         ...(tanggal !== undefined ? { tanggalEvent: tanggal } : {}),
+        ...(linkPeraturan !== undefined ? { linkPeraturan: linkPeraturan || null } : {}),
       },
     });
 
